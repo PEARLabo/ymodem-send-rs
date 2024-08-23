@@ -1,6 +1,7 @@
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 type Port = Box<dyn SerialPort>;
 const PACKET_SIZE: usize = 128;
+#[derive(Debug)]
 enum YmodemControlCode {
     Soh,
     Stx,
@@ -10,7 +11,7 @@ enum YmodemControlCode {
     Can = 0x18,
     C = 0x43,
 }
-#[derive(std::cmp::PartialEq)]
+#[derive(std::cmp::PartialEq,Debug)]
 pub enum YmodemError {
     InvalidResponse,
     Timeout,
