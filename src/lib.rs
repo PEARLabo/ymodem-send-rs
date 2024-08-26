@@ -3,7 +3,7 @@ type Port = Box<dyn SerialPort>;
 const PACKET_SIZE: usize = 128;
 #[derive(Debug)]
 enum YmodemControlCode {
-    Soh,
+    Soh = 0x01,
     Stx,
     Eot = 0x04,
     Ack = 0x06,
