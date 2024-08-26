@@ -118,6 +118,9 @@ impl<'a> YmodemSender<'a> {
         }
         // EOTの送信
         self.send_packet(port, &[YmodemControlCode::Eot as u8])?;
+        if Self::wait_msg(port) != YmodemControlCode::C as u8 {
+          return Err(YmodemError::InvalidResponse)
+        }
         let data_block = Self::create_data_block(&[0; PACKET_SIZE], 0);
         self.send_packet(port, &data_block)?;
         // 最後のACKを待つ
