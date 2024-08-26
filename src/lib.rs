@@ -40,14 +40,18 @@ impl<'a> YmodemSender<'a> {
             fdata,
         }
     }
+    fn wait_msg(port: &mut Box<dyn SerialPort>) -> u8 {
+      let mut response = [0; 1];
+      port.read_exact(&mut response).unwrap();
+      response[0]
+    }
     fn wait_for_ack(port: &mut Box<dyn SerialPort>) -> Result<(), YmodemError> {
-        let mut response = [0; 1];
-        port.read_exact(&mut response).unwrap();
-        if response[0] == YmodemControlCode::Ack as u8 {
+        let response = Self::wait_msg(port);
+        if response == YmodemControlCode::Ack as u8 {
             Ok(())
-        } else if response[0] == YmodemControlCode::Nak as u8 {
+        } else if response == YmodemControlCode::Nak as u8 {
             Err(YmodemError::RequestReSend)
-        } else if response[0] == YmodemControlCode::Can as u8 {
+        } else if response == YmodemControlCode::Can as u8 {
             Err(YmodemError::SendFailed)
         } else {
             Err(YmodemError::InvalidResponse)
@@ -105,9 +109,11 @@ impl<'a> YmodemSender<'a> {
         }
         let file_header = self.create_file_header();
         self.send_packet(port, &file_header)?;
+        if Self::wait_msg(port) != YmodemControlCode::C as u8 {
+          return Err(YmodemError::InvalidResponse)
+        }
         for (block_number, chunk) in self.fdata.chunks(PACKET_SIZE).enumerate() {
             let data_block = Self::create_data_block(chunk, (block_number + 1) as u8);
-            port.write_all(&data_block).unwrap();
             self.send_packet(port, &data_block)?;
         }
         // EOTの送信
