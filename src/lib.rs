@@ -1,5 +1,4 @@
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
-use kioto_serial::SerialStream;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 type Port = Box<dyn SerialPort>;
 const PACKET_SIZE: usize = 128;
@@ -130,12 +129,12 @@ impl<'a> YmodemSender<'a> {
         Ok(())
     }
 // ASYNC CODE
-    async fn wait_msg_async(port: &mut SerialStream) -> u8 {
+    async fn wait_msg_async(port: &mut serial2_tokio::SerialPort) -> u8 {
       let mut response = [0; 1];
       port.read_exact(&mut response).await.unwrap();
       response[0]
     }
-    async fn wait_for_ack_async(port: &mut SerialStream) -> Result<(), YmodemError> {
+    async fn wait_for_ack_async(port: &mut serial2_tokio::SerialPort) -> Result<(), YmodemError> {
         let response = Self::wait_msg_async(port).await;
         if response == YmodemControlCode::Ack as u8 {
             Ok(())
@@ -147,7 +146,7 @@ impl<'a> YmodemSender<'a> {
             Err(YmodemError::InvalidResponse)
         }
     }
-    async fn send_packet_async(&self, port: &mut SerialStream, packet: &[u8]) -> Result<(), YmodemError> {
+    async fn send_packet_async(&self, port: &mut serial2_tokio::SerialPort, packet: &[u8]) -> Result<(), YmodemError> {
         port.write_all(packet).await.unwrap();
         while let Err(e) = Self::wait_for_ack_async(port).await {
             if e == YmodemError::RequestReSend {
@@ -158,7 +157,7 @@ impl<'a> YmodemSender<'a> {
         }
         Ok(())
     }
-    pub async fn send_async(&self, port: &mut SerialStream) -> Result<(), YmodemError> {
+    pub async fn send_async(&self, port: &mut serial2_tokio::SerialPort) -> Result<(), YmodemError> {
         let mut response = [0; 1];
         loop {
             port.read_exact(&mut response).await;
