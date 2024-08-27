@@ -1,4 +1,6 @@
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
+use kioto_serial::SerialStream;
+use tokio::io::{AsyncReadExt,AsyncWriteExt};
 type Port = Box<dyn SerialPort>;
 const PACKET_SIZE: usize = 128;
 #[derive(Debug)]
@@ -123,6 +125,63 @@ impl<'a> YmodemSender<'a> {
         }
         let data_block = Self::create_data_block(&[0; PACKET_SIZE], 0);
         self.send_packet(port, &data_block)?;
+        // 最後のACKを待つ
+        println!("YMODEM PASS!");
+        Ok(())
+    }
+// ASYNC CODE
+    async fn wait_msg_async(port: &mut SerialStream) -> u8 {
+      let mut response = [0; 1];
+      port.read_exact(&mut response).await.unwrap();
+      response[0]
+    }
+    async fn wait_for_ack_async(port: &mut SerialStream) -> Result<(), YmodemError> {
+        let response = Self::wait_msg_async(port).await;
+        if response == YmodemControlCode::Ack as u8 {
+            Ok(())
+        } else if response == YmodemControlCode::Nak as u8 {
+            Err(YmodemError::RequestReSend)
+        } else if response == YmodemControlCode::Can as u8 {
+            Err(YmodemError::SendFailed)
+        } else {
+            Err(YmodemError::InvalidResponse)
+        }
+    }
+    async fn send_packet_async(&self, port: &mut SerialStream, packet: &[u8]) -> Result<(), YmodemError> {
+        port.write_all(packet).await.unwrap();
+        while let Err(e) = Self::wait_for_ack_async(port).await {
+            if e == YmodemError::RequestReSend {
+                port.write_all(packet).await.unwrap();
+            } else {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    pub async fn send_async(&self, port: &mut SerialStream) -> Result<(), YmodemError> {
+        let mut response = [0; 1];
+        loop {
+            port.read_exact(&mut response).await;
+            if response[0] == YmodemControlCode::C as u8 {
+                break;
+            }
+        }
+        let file_header = self.create_file_header();
+        self.send_packet_async(port, &file_header).await?;
+        if Self::wait_msg_async(port).await != YmodemControlCode::C as u8 {
+          return Err(YmodemError::InvalidResponse)
+        }
+        for (block_number, chunk) in self.fdata.chunks(PACKET_SIZE).enumerate() {
+            let data_block = Self::create_data_block(chunk, (block_number + 1) as u8);
+            self.send_packet_async(port, &data_block).await?;
+        }
+        // EOTの送信
+        self.send_packet_async(port, &[YmodemControlCode::Eot as u8]).await?;
+        if Self::wait_msg_async(port).await != YmodemControlCode::C as u8 {
+          return Err(YmodemError::InvalidResponse)
+        }
+        let data_block = Self::create_data_block(&[0; PACKET_SIZE], 0);
+        self.send_packet_async(port, &data_block).await?;
         // 最後のACKを待つ
         println!("YMODEM PASS!");
         Ok(())
