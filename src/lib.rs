@@ -1,5 +1,8 @@
+#[cfg(feature = "async")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 const PACKET_SIZE: usize = 128;
+mod rcv;
 #[derive(Debug)]
 enum YmodemControlCode {
     Soh = 0x01,
@@ -31,29 +34,19 @@ pub struct YmodemSender<'a> {
     fname: String,
     fdata: &'a [u8],
 }
+#[cfg(feature = "async")]
+pub trait YmodemAsyncSend {
+    fn send(&self, port: &mut serial2_tokio::SerialPort) -> impl std::future::Future<Output = Result<(), YmodemError>> + Send;
+}
+pub trait YmodemSend {
+    fn send(&self, port: &mut serial2::SerialPort) -> Result<(), YmodemError>;
+}
 
 impl<'a> YmodemSender<'a> {
     pub fn new(fname: &str, fdata: &'a [u8]) -> Self {
         Self {
             fname: fname.to_string(),
             fdata,
-        }
-    }
-    fn wait_msg(port: &mut serial2::SerialPort) -> u8 {
-        let mut response = [0; 1];
-        port.read_exact(&mut response).unwrap();
-        response[0]
-    }
-    fn wait_for_ack(port: &mut serial2::SerialPort) -> Result<(), YmodemError> {
-        let response = Self::wait_msg(port);
-        if response == YmodemControlCode::Ack as u8 {
-            Ok(())
-        } else if response == YmodemControlCode::Nak as u8 {
-            Err(YmodemError::RequestReSend)
-        } else if response == YmodemControlCode::Can as u8 {
-            Err(YmodemError::SendFailed)
-        } else {
-            Err(YmodemError::InvalidResponse)
         }
     }
     fn create_file_header(&self) -> Vec<u8> {
@@ -93,7 +86,7 @@ impl<'a> YmodemSender<'a> {
         packet: &[u8],
     ) -> Result<(), YmodemError> {
         port.write_all(packet).unwrap();
-        while let Err(e) = Self::wait_for_ack(&mut *port) {
+        while let Err(e) = rcv::wait_for_ack(&mut *port) {
             if e == YmodemError::RequestReSend {
                 port.write_all(packet).unwrap();
             } else {
@@ -102,7 +95,25 @@ impl<'a> YmodemSender<'a> {
         }
         Ok(())
     }
-    pub fn send(&self, port: &mut serial2::SerialPort) -> Result<(), YmodemError> {
+    #[cfg(feature = "async")]
+    async fn send_packet_async(
+        &self,
+        port: &mut serial2_tokio::SerialPort,
+        packet: &[u8],
+    ) -> Result<(), YmodemError> {
+        port.write_all(packet).await.unwrap();
+        while let Err(e) = rcv::r#async::wait_for_ack(port).await {
+            if e == YmodemError::RequestReSend {
+                port.write_all(packet).await.unwrap();
+            } else {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+}
+impl<'a> YmodemSend for YmodemSender<'a> {
+    fn send(&self, port: &mut serial2::SerialPort) -> Result<(), YmodemError> {
         let mut response = [0; 1];
         loop {
             port.read_exact(&mut response).unwrap();
@@ -112,7 +123,7 @@ impl<'a> YmodemSender<'a> {
         }
         let file_header = self.create_file_header();
         self.send_packet(port, &file_header)?;
-        if Self::wait_msg(port) != YmodemControlCode::C as u8 {
+        if rcv::wait_msg(port) != YmodemControlCode::C as u8 {
             return Err(YmodemError::InvalidResponse);
         }
         for (block_number, chunk) in self.fdata.chunks(PACKET_SIZE).enumerate() {
@@ -121,62 +132,28 @@ impl<'a> YmodemSender<'a> {
         }
         // EOTの送信
         self.send_packet(port, &[YmodemControlCode::Eot as u8])?;
-        if Self::wait_msg(port) != YmodemControlCode::C as u8 {
+        if rcv::wait_msg(port) != YmodemControlCode::C as u8 {
             return Err(YmodemError::InvalidResponse);
         }
         let data_block = Self::create_data_block(&[0; PACKET_SIZE], 0);
         self.send_packet(port, &data_block)?;
         // 最後のACKを待つ
-        println!("YMODEM PASS!");
         Ok(())
     }
-    // ASYNC CODE
-    async fn wait_msg_async(port: &mut serial2_tokio::SerialPort) -> u8 {
-        let mut response = [0; 1];
-        port.read_exact(&mut response).await.unwrap();
-        response[0]
-    }
-    async fn wait_for_ack_async(port: &mut serial2_tokio::SerialPort) -> Result<(), YmodemError> {
-        let response = Self::wait_msg_async(port).await;
-        if response == YmodemControlCode::Ack as u8 {
-            Ok(())
-        } else if response == YmodemControlCode::Nak as u8 {
-            Err(YmodemError::RequestReSend)
-        } else if response == YmodemControlCode::Can as u8 {
-            Err(YmodemError::SendFailed)
-        } else {
-            Err(YmodemError::InvalidResponse)
-        }
-    }
-    async fn send_packet_async(
-        &self,
-        port: &mut serial2_tokio::SerialPort,
-        packet: &[u8],
-    ) -> Result<(), YmodemError> {
-        port.write_all(packet).await.unwrap();
-        while let Err(e) = Self::wait_for_ack_async(port).await {
-            if e == YmodemError::RequestReSend {
-                port.write_all(packet).await.unwrap();
-            } else {
-                return Err(e);
-            }
-        }
-        Ok(())
-    }
-    pub async fn send_async(
-        &self,
-        port: &mut serial2_tokio::SerialPort,
-    ) -> Result<(), YmodemError> {
+}
+#[cfg(feature = "async")]
+impl<'a> YmodemAsyncSend for YmodemSender<'a> {
+    async fn send(&self, port: &mut serial2_tokio::SerialPort) -> Result<(), YmodemError> {
         let mut response = [0; 1];
         loop {
-            port.read_exact(&mut response).await;
+            port.read_exact(&mut response).await.unwrap();
             if response[0] == YmodemControlCode::C as u8 {
                 break;
             }
         }
         let file_header = self.create_file_header();
         self.send_packet_async(port, &file_header).await?;
-        if Self::wait_msg_async(port).await != YmodemControlCode::C as u8 {
+        if rcv::r#async::wait_msg(port).await != YmodemControlCode::C as u8 {
             return Err(YmodemError::InvalidResponse);
         }
         for (block_number, chunk) in self.fdata.chunks(PACKET_SIZE).enumerate() {
@@ -186,13 +163,12 @@ impl<'a> YmodemSender<'a> {
         // EOTの送信
         self.send_packet_async(port, &[YmodemControlCode::Eot as u8])
             .await?;
-        if Self::wait_msg_async(port).await != YmodemControlCode::C as u8 {
+        if rcv::r#async::wait_msg(port).await != YmodemControlCode::C as u8 {
             return Err(YmodemError::InvalidResponse);
         }
         let data_block = Self::create_data_block(&[0; PACKET_SIZE], 0);
         self.send_packet_async(port, &data_block).await?;
         // 最後のACKを待つ
-        println!("YMODEM PASS!");
         Ok(())
     }
 }
